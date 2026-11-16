@@ -16,6 +16,7 @@ mongoose.connect(process.env.MONGO_URI)
 
 // API Routes
 app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/transactions', require('./routes/transactionRoutes'));
 
 // Basic Health Check Route
 app.get('/', (req, res) => {
