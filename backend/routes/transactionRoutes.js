@@ -1,11 +1,31 @@
 const express = require('express');
 const router = express.Router();
-const { getTransactions, addTransaction } = require('../controllers/transactionController');
+const {
+    getTransactions,
+    addTransaction,
+    updateTransaction,
+    deleteTransaction,
+} = require('../controllers/transactionController');
 const { protect } = require('../middleware/authMiddleware');
+const validate = require('../middleware/validate');
+const {
+    idParams,
+    createTransactionSchema,
+    updateTransactionSchema,
+    listTransactionsQuery,
+} = require('../validators/schemas');
 
-// Both routes are protected by the JWT middleware
-router.route('/')
-    .get(protect, getTransactions)
-    .post(protect, addTransaction);
+// Every transaction route requires a valid JWT.
+router.use(protect);
+
+router
+    .route('/')
+    .get(validate({ query: listTransactionsQuery }), getTransactions)
+    .post(validate({ body: createTransactionSchema }), addTransaction);
+
+router
+    .route('/:id')
+    .patch(validate({ params: idParams, body: updateTransactionSchema }), updateTransaction)
+    .delete(validate({ params: idParams }), deleteTransaction);
 
 module.exports = router;

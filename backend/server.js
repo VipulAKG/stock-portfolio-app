@@ -1,27 +1,34 @@
-require('dotenv').config();
-const express = require('express');
+const env = require('./config/env'); // validates required env vars (fails fast)
 const mongoose = require('mongoose');
-const cors = require('cors');
+const connectDB = require('./config/db');
+const app = require('./app');
 
-const app = express();
+const start = async () => {
+    try {
+        await connectDB();
+    } catch (err) {
+        console.error('MongoDB connection failed:', err.message);
+        process.exit(1); // don't run an API that can't reach its database
+    }
 
-// Middleware
-app.use(express.json()); 
-app.use(cors()); 
+    const server = app.listen(env.port, () => {
+        console.log(`Server running on port ${env.port} (${env.nodeEnv})`);
+    });
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('MongoDB Database Connected Successfully'))
-    .catch((err) => console.log('MongoDB Connection Error: ', err));
+    const shutdown = (signal) => {
+        console.log(`${signal} received, shutting down...`);
+        server.close(async () => {
+            await mongoose.connection.close();
+            process.exit(0);
+        });
+        setTimeout(() => process.exit(1), 10000).unref(); // force exit if stuck
+    };
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+};
 
-// API Routes
-app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/transactions', require('./routes/transactionRoutes'));
-
-// Basic Health Check Route
-app.get('/', (req, res) => {
-    res.send('Stock Portfolio API is running...');
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled promise rejection:', reason);
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+start();
