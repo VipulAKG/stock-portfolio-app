@@ -1,36 +1,93 @@
 const Transaction = require('../models/Transaction');
+const AppError = require('../utils/AppError');
+const { findPositionViolation, describeViolation } = require('../utils/portfolio');
 
-// @desc    Get all transactions for logged-in user
-// @route   GET /api/transactions
-exports.getTransactions = async (req, res) => {
-    try {
-        const transactions = await Transaction.find({ userId: req.user._id });
-        res.status(200).json(transactions);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
+/**
+ * Make sure a user's history for one ticker never goes short.
+ *  - excludeId: a transaction to ignore (the one being edited / deleted)
+ *  - extra:     a transaction to add to the history (the new / edited version)
+ * Replaying the whole history (not just "current holdings") means back-dated
+ * trades and edits are validated correctly too.
+ */
+const assertValidPositions = async (userId, tickerSymbol, { excludeId, extra } = {}) => {
+    const existing = await Transaction.find({ userId, tickerSymbol }).lean();
+    const txs = existing.filter((t) => String(t._id) !== String(excludeId));
+    if (extra) txs.push({ ...extra, _id: 'pending', createdAt: new Date() });
+
+    const violation = findPositionViolation(txs);
+    if (violation) throw new AppError(describeViolation(violation), 422);
 };
 
-// @desc    Add a new stock transaction
+// @desc    List the logged-in user's transactions (paginated, newest first)
+// @route   GET /api/transactions?page=1&limit=50&ticker=AAPL&type=BUY
+exports.getTransactions = async (req, res) => {
+    const { page, limit, ticker, type } = req.valid.query;
+
+    const filter = { userId: req.user._id };
+    if (ticker) filter.tickerSymbol = ticker;
+    if (type) filter.transactionType = type;
+
+    const [data, total] = await Promise.all([
+        Transaction.find(filter)
+            .sort({ tradeDate: -1, createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .lean(),
+        Transaction.countDocuments(filter),
+    ]);
+
+    res.status(200).json({ data, page, limit, total, pages: Math.ceil(total / limit) });
+};
+
+// @desc    Add a stock transaction
 // @route   POST /api/transactions
 exports.addTransaction = async (req, res) => {
-    try {
-        const { tickerSymbol, quantity, executionPrice, transactionType } = req.body;
+    const body = req.valid.body;
+    const tx = { ...body, tradeDate: body.tradeDate ?? new Date() };
 
-        if (!tickerSymbol || !quantity || !executionPrice) {
-            return res.status(400).json({ message: 'Please add all required stock fields' });
-        }
-
-        const transaction = await Transaction.create({
-            userId: req.user._id,
-            tickerSymbol: tickerSymbol.toUpperCase(),
-            quantity,
-            executionPrice,
-            transactionType: transactionType || 'BUY'
-        });
-
-        res.status(201).json(transaction);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
+    if (tx.transactionType === 'SELL') {
+        await assertValidPositions(req.user._id, tx.tickerSymbol, { extra: tx });
     }
+
+    const transaction = await Transaction.create({ userId: req.user._id, ...tx });
+    res.status(201).json(transaction);
+};
+
+// @desc    Edit a transaction
+// @route   PATCH /api/transactions/:id
+exports.updateTransaction = async (req, res) => {
+    const doc = await Transaction.findOne({ _id: req.valid.params.id, userId: req.user._id });
+    if (!doc) throw new AppError('Transaction not found', 404);
+
+    const updated = {
+        tickerSymbol: doc.tickerSymbol,
+        transactionType: doc.transactionType,
+        quantity: doc.quantity,
+        executionPrice: doc.executionPrice,
+        tradeDate: doc.tradeDate ?? doc.createdAt,
+        ...req.valid.body,
+    };
+
+    // If the ticker changed, the old ticker must still be valid without this trade.
+    if (updated.tickerSymbol !== doc.tickerSymbol) {
+        await assertValidPositions(req.user._id, doc.tickerSymbol, { excludeId: doc._id });
+    }
+    await assertValidPositions(req.user._id, updated.tickerSymbol, { excludeId: doc._id, extra: updated });
+
+    Object.assign(doc, req.valid.body);
+    await doc.save();
+    res.status(200).json(doc);
+};
+
+// @desc    Delete a transaction
+// @route   DELETE /api/transactions/:id
+exports.deleteTransaction = async (req, res) => {
+    const doc = await Transaction.findOne({ _id: req.valid.params.id, userId: req.user._id });
+    if (!doc) throw new AppError('Transaction not found', 404);
+
+    // Removing a BUY could leave a later SELL without shares behind it.
+    await assertValidPositions(req.user._id, doc.tickerSymbol, { excludeId: doc._id });
+
+    await doc.deleteOne();
+    res.status(200).json({ message: 'Transaction deleted' });
 };
