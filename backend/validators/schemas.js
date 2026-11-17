@@ -12,7 +12,7 @@ const tickerSymbol = z
     .string()
     .trim()
     .toUpperCase()
-    .regex(/^[A-Z0-9.&^=-]{1,20}$/, 'Invalid ticker symbol');
+    .regex(/^[A-Z0-9.&^=/-]{1,20}$/, 'Invalid ticker symbol');
 
 const tradeDate = z
     .string()
